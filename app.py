@@ -1,129 +1,96 @@
-from fastapi import FastAPI, HTTPException,UploadFile,File
-from pydantic import BaseModel
-import sounddevice as sd
-import scipy.io.wavfile as wav
-import numpy as np
+from fastapi import FastAPI, HTTPException, Depends, Header
+from pydantic import BaseModel, HttpUrl
+import requests
+import secrets
 import tempfile
 import os
-from transcribe import transcribe_audio
-from threading import Thread
-from summarize import summarize_text
 
+# Initialize FastAPI app
 app = FastAPI()
 
-fs = 44100  # Sample rate
-recording = []
-recording_stream = None
-is_recording = False
-is_paused = False
+# User API key database (example)
+USER_API_KEYS = {
+    # Example API key for demonstration
+    "jh-7c6a2e4bcd9f4c6e9a85e356d6fb43e12dc1e2c174e947f0f15e4d927bc9f91c": "User1"
+}
 
-class SummarizationRequest(BaseModel):
-    text: str
+# Function to generate an API key
+def generate_api_key_with_prefix():
+    """
+    Generate an API key prefixed with 'jh-'.
+    Returns:
+        str: A randomly generated API key in the format 'jh-apikey'.
+    """
+    api_key = secrets.token_hex(32)  # Generate a 64-character hexadecimal key
+    return f"jh-{api_key}"  # Add the 'jh-' prefix
+
+# Dependency to authenticate user
+def authenticate_user(jh_apikey: str = Header(...)):
+    """
+    Authenticate the user based on the API key in the 'jh-apikey' format.
+    """
+    user = USER_API_KEYS.get(jh_apikey)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid API key in 'jh-apikey' header")
+    return user
+
+# Pydantic model for file link input
+class FileLink(BaseModel):
+    file_url: HttpUrl
 
 @app.post("/upload-audio/")
-async def upload_audio(file: UploadFile = File(...)):
-    """Endpoint for uploading audio files to transcribe and summarize."""
-    if file.content_type not in ["audio/wav", "audio/mp3"]:
-        raise HTTPException(status_code=400, detail="Invalid file format. Only WAV or MP3 files are accepted.")
-    
+async def upload_audio(file_link: FileLink, current_user: str = Depends(authenticate_user)):
+    """
+    Endpoint to upload audio files via a link, transcribe, and summarize.
+    """
+    # Download the file from the provided link
+    try:
+        response = requests.get(file_link.file_url)
+        response.raise_for_status()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=400, detail=f"Error downloading file: {e}")
+
+    # Save the file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
-        temp_audio.write(await file.read())
+        temp_audio.write(response.content)
         temp_audio_path = temp_audio.name
 
-    transcription_text, error = transcribe_audio(temp_audio_path)
-    os.remove(temp_audio_path) 
+    try:
+        # Transcribe audio (dummy function for example)
+        transcription_text = f"Transcribed text from {temp_audio_path}"  # Replace with actual logic
+    except Exception as e:
+        os.remove(temp_audio_path)  # Cleanup on failure
+        raise HTTPException(status_code=500, detail=f"Error in transcription: {e}")
 
-    if error:
-        raise HTTPException(status_code=500, detail=f"Error in transcription: {error}")
-    
-    return {"transcription": transcription_text}
+    # Clean up temporary file
+    os.remove(temp_audio_path)
+
+    return {"transcription": transcription_text, "user": current_user}
 
 @app.post("/summarize/")
-async def summarize(request: SummarizationRequest):
-    """Endpoint for summarizing transcribed text."""
-    summary, error = summarize_text(request.text)
-    if error:
-        raise HTTPException(status_code=500, detail=f"Error in summarization: {error}")
-    
-    return {"summary": summary}
+async def summarize(request: BaseModel, current_user: str = Depends(authenticate_user)):
+    """
+    Endpoint for summarizing text.
+    """
+    text_to_summarize = request.dict().get("text")
+    if not text_to_summarize:
+        raise HTTPException(status_code=400, detail="Text field is required for summarization.")
 
-@app.post("/start-recording/")
-async def start_recording():
-    """Start recording audio."""
-    global is_recording, is_paused, recording, recording_stream
+    try:
+        # Summarize text (dummy function for example)
+        summary = f"Summary of: {text_to_summarize}"  # Replace with actual logic
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error in summarization: {e}")
 
-    if is_recording:
-        raise HTTPException(status_code=400, detail="Recording is already in progress.")
-    
-    is_recording = True
-    is_paused = False
-    recording = [] 
+    return {"summary": summary, "user": current_user}
 
-    def record_audio():
-        global recording, is_recording, is_paused
-        with sd.InputStream(samplerate=fs, channels=1) as stream:
-            while is_recording:
-                if not is_paused:
-                    buffer = stream.read(1024)[0]
-                    recording.append(buffer)
-
-    recording_thread = Thread(target=record_audio)
-    recording_thread.start()
-    return {"message": "Recording started."}
-
-@app.post("/pause-recording/")
-async def pause_recording():
-    """Pause audio recording."""
-    global is_paused, is_recording
-
-    if not is_recording:
-        raise HTTPException(status_code=400, detail="No recording in progress to pause.")
-    if is_paused:
-        raise HTTPException(status_code=400, detail="Recording is already paused.")
-
-    is_paused = True
-    return {"message": "Recording paused."}
-
-@app.post("/resume-recording/")
-async def resume_recording():
-    """Resume audio recording."""
-    global is_paused, is_recording
-
-    if not is_recording:
-        raise HTTPException(status_code=400, detail="No recording in progress to resume.")
-    if not is_paused:
-        raise HTTPException(status_code=400, detail="Recording is already running.")
-
-    is_paused = False
-    return {"message": "Recording resumed."}
-
-@app.post("/stop-recording/")
-async def stop_recording():
-    """Stop recording audio and process the recorded data."""
-    global is_recording, is_paused, recording
-
-    if not is_recording:
-        raise HTTPException(status_code=400, detail="No recording is in progress.")
-
-    is_recording = False
-    is_paused = False
-
-    # Combine recorded buffers into a single array
-    recording_data = np.concatenate(recording, axis=0)
-
-    # Save the recording to a temporary file
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_audio_file:
-        wav.write(temp_audio_file.name, fs, recording_data.astype(np.float32))
-        audio_path = temp_audio_file.name
-
-    # Transcribe the audio
-    transcription_text, error = transcribe_audio(audio_path)
-    os.remove(audio_path)  
-
-    if error:
-        raise HTTPException(status_code=500, detail=f"Error in transcription: {error}")
-    
-    return {"transcription": transcription_text}
+@app.get("/generate-api-key/")
+async def generate_api_key_endpoint():
+    """
+    Endpoint to generate a new API key (for admin use).
+    """
+    new_api_key = generate_api_key_with_prefix()
+    return {"api_key": new_api_key}
 
 if __name__ == "__main__":
     import uvicorn
