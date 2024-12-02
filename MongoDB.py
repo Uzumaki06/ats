@@ -58,7 +58,7 @@ async def upload_audio(file_link: FileLink, current_user: str = Depends(authenti
         raise HTTPException(status_code=400, detail=f"Error downloading file: {e}")
 
     # Save the file temporarily
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
+    with tempfile.NamedTemporaryFile(delete=False) as temp_audio:
         temp_audio.write(response.content)
         temp_audio_path = temp_audio.name
 
