@@ -7,3 +7,4 @@ sounddevice
 scipy
 numpy
 python-multipart
+motor
